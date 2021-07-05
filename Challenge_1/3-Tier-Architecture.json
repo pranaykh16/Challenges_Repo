@@ -1,0 +1,651 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2015-01-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "Tier": {
+      "type": "string",
+      "allowedValues": [
+        "Web-Tier",
+        "App-Tier",
+        "DB-Tier"
+      ],
+      "defaultValue": "Web-Tier"
+    },
+    "No.of Instances": {
+      "type": "int",
+      "minValue": 2,
+      "maxValue": 4,
+      "defaultValue": 2
+    },
+    "Vmsize": {
+      "type": "string",
+      "allowedValues": [
+        "Standard_A1_v2",
+        "Standard_A2_v2",
+        "Standard_B1ms",
+        "Standard_A4_v2"
+      ],
+      "defaultValue": "Standard_A1_v2"
+    },
+    "Admin_name": {
+      "type": "string"
+    },
+    "Admin_password": {
+      "type": "securestring"
+    },
+    "OperatingSystem": {
+      "type": "string",
+      "allowedValues": [
+        "Windows",
+        "Linux"
+      ]
+    }
+  },
+  "variables": {
+    "VirtualMachineName": "[concat(parameters('Tier'),'VM')]",
+    "VM_Images": {
+      "Windows": {
+        "publisher": "MicrosoftWindowsDesktop",
+        "offer": "Windows-10",
+        "sku": "rs4-pro",
+        "version": "latest"
+      },
+      "Linux": {
+        "publisher": "Canonical",
+        "offer": "UbuntuServer",
+        "sku": "18.04-LTS",
+        "version": "latest"
+      }
+    },
+    "lbname": "LBarmtemp",
+    "lbID": "[resourceId('Microsoft.Network/loadBalancers',variables('lbname'))]",
+    "frontEndIPConfigID": "[concat(variables('lbID'),'/frontendIPConfigurations/LoadBalancerFrontEnd')]",
+    "lbPoolID": "[concat(variables('lbID'),'/backendAddressPools/BackendPoolLB')]",
+    "lbProbeID": "[concat(variables('lbID'),'/probes/HTTP')]",
+    "publicIPAddressName": "publicIp1",
+    "publicID": "[resourceId('Microsoft.Network/publicIPAddresses',variables('publicIPAddressName'))]",
+    "StorageAccName": "[concat('store',uniquestring(resourceGroup().id))]",
+    "Storagetype": "Standard_LRS",
+    "nicVnetID": "[resourceId('Microsoft.Network/virtualNetworks', '3TierVnet')]",
+    "webnicSubnetRef": "[concat(variables('nicVnetID'), '/subnets/', 'Web-Subnet')]",
+    "appnicSubnetRef": "[concat(variables('nicVnetID'), '/subnets/', 'App-Subnet')]",
+    "dbnicSubnetRef": "[concat(variables('nicVnetID'), '/subnets/', 'DB-Subnet')]",
+    "AVS-name": "[concat(parameters('Tier'),'AVset')]",
+    "databaseEdition": "Basic",
+    "databaseServiceObjectiveName": "Basic"
+  },
+  "resources": [
+    {
+      "apiVersion": "2015-05-01-preview",
+      "type": "Microsoft.Network/networkSecurityGroups",
+      "name": "Websubnet-NSG",
+      "location": "[resourceGroup().location]",
+      "properties": {
+        "securityRules": [
+          {
+            "name": "AllowInternet",
+            "properties": {
+              "protocol": "Tcp",
+              "sourcePortRange": "*",
+              "destinationPortRange": "80",
+              "sourceAddressPrefix": "*",
+              "destinationAddressPrefix": "*",
+              "access": "Allow",
+              "priority": 100,
+              "direction": "Inbound"
+            }
+          },
+          {
+            "name": "WebsubACCESSAppsub",
+            "properties": {
+              "protocol": "Tcp",
+              "sourcePortRange": "*",
+              "destinationPortRange": "*",
+              "sourceAddressPrefix": "*",
+              "destinationAddressPrefix": "172.16.2.0/16",
+              "access": "Allow",
+              "priority": 110,
+              "direction": "Outbound"
+            }
+          },
+          {
+            "name": "AllowAPPacc",
+            "properties": {
+              "protocol": "Tcp",
+              "sourcePortRange": "*",
+              "destinationPortRange": "*",
+              "sourceAddressPrefix": "172.16.2.0/24",
+              "destinationAddressPrefix": "*",
+              "access": "Allow",
+              "priority": 120,
+              "direction": "Inbound"
+            }
+          },
+          {
+            "name": "DenyDBacc",
+            "properties": {
+              "protocol": "Tcp",
+              "sourcePortRange": "*",
+              "destinationPortRange": "*",
+              "sourceAddressPrefix": "172.16.3.0/24",
+              "destinationAddressPrefix": "*",
+              "access": "Deny",
+              "priority": 130,
+              "direction": "Inbound"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "2015-05-01-preview",
+      "type": "Microsoft.Network/networkSecurityGroups",
+      "name": "Appsub-NSG",
+      "location": "[resourceGroup().location]",
+      "properties": {
+        "securityRules": [
+          {
+            "name": "DenyDBac",
+            "properties": {
+              "protocol": "Tcp",
+              "sourcePortRange": "*",
+              "destinationPortRange": "*",
+              "sourceAddressPrefix": "172.16.3.0/24",
+              "destinationAddressPrefix": "*",
+              "access": "Deny",
+              "priority": 100,
+              "direction": "Inbound"
+            }
+          },
+          {
+            "name": "AllowWebacc",
+            "properties": {
+              "protocol": "Tcp",
+              "sourcePortRange": "*",
+              "destinationPortRange": "*",
+              "sourceAddressPrefix": "172.16.1.0/24",
+              "destinationAddressPrefix": "*",
+              "access": "Allow",
+              "priority": 120,
+              "direction": "Inbound"
+            }
+          },
+          {
+            "name": "AppsubAccessDBsub",
+            "properties": {
+              "protocol": "Tcp",
+              "sourcePortRange": "*",
+              "destinationPortRange": "*",
+              "sourceAddressPrefix": "*",
+              "destinationAddressPrefix": "172.16.3.0/24",
+              "access": "Allow",
+              "priority": 105,
+              "direction": "Outbound"
+            }
+          },
+          {
+            "name": "AppsubAccessWebsub",
+            "properties": {
+              "protocol": "Tcp",
+              "sourcePortRange": "*",
+              "destinationPortRange": "*",
+              "sourceAddressPrefix": "*",
+              "destinationAddressPrefix": "172.16.1.0/24",
+              "access": "Allow",
+              "priority": 110,
+              "direction": "Outbound"
+            }
+          },
+          {
+            "name": "Block_Internet_Outbound",
+            "properties": {
+              "description": "Block Internet",
+              "protocol": "Tcp",
+              "sourcePortRange": "*",
+              "destinationPortRange": "*",
+              "sourceAddressPrefix": "*",
+              "destinationAddressPrefix": "Internet",
+              "access": "Deny",
+              "priority": 200,
+              "direction": "Outbound"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "2015-05-01-preview",
+      "type": "Microsoft.Network/networkSecurityGroups",
+      "name": "DBsub-NSG",
+      "location": "[resourceGroup().location]",
+      "properties": {
+        "securityRules": [
+          {
+            "name": "Deny_App_Sub",
+            "properties": {
+              "protocol": "Tcp",
+              "sourcePortRange": "*",
+              "destinationPortRange": "*",
+              "sourceAddressPrefix": "*",
+              "destinationAddressPrefix": "172.16.2.0/24",
+              "access": "Deny",
+              "priority": 100,
+              "direction": "Outbound"
+            }
+          },
+          {
+            "name": "Deny_Web_Sub",
+            "properties": {
+              "protocol": "Tcp",
+              "sourcePortRange": "*",
+              "destinationPortRange": "*",
+              "sourceAddressPrefix": "*",
+              "destinationAddressPrefix": "172.16.1.0/24",
+              "access": "Deny",
+              "priority": 110,
+              "direction": "Outbound"
+            }
+          },
+          {
+            "name": "AllowAPPacc",
+            "properties": {
+              "protocol": "Tcp",
+              "sourcePortRange": "*",
+              "destinationPortRange": "*",
+              "sourceAddressPrefix": "172.16.2.0/24",
+              "destinationAddressPrefix": "*",
+              "access": "Allow",
+              "priority": 120,
+              "direction": "Inbound"
+            }
+          },
+          {
+            "name": "Block_Internet",
+            "properties": {
+              "protocol": "*",
+              "sourcePortRange": "*",
+              "destinationPortRange": "*",
+              "sourceAddressPrefix": "*",
+              "destinationAddressPrefix": "0.0.0.0",
+              "access": "Deny",
+              "priority": 130,
+              "direction": "Outbound"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "condition": "[equals(parameters('Tier'),'Web-Tier')]",
+      "type": "Microsoft.Network/loadBalancers",
+      "apiVersion": "2015-05-01-preview",
+      "name": "[variables('lbname')]",
+      "location": "[resourceGroup().location]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/publicIPAddresses',variables('publicIPAddressName'))]"
+      ],
+      "properties": {
+        "frontendIPConfigurations": [
+          {
+            "name": "LoadBalancerFrontEnd",
+            "properties": {
+              "publicIPAddress": {
+                "id": "[variables('publicID')]"
+              }
+            }
+          }
+        ],
+        "backendAddressPools": [
+          {
+            "name": "BackendPoolLB"
+          }
+        ],
+        "loadBalancingRules": [
+          {
+            "name": "LBRule",
+            "properties": {
+              "frontendIPConfiguration": {
+                "id": "[variables('frontEndIPConfigID')]"
+              },
+              "backendAddressPool": {
+                "id": "[variables('lbPoolID')]"
+              },
+              "protocol": "Tcp",
+              "frontendPort": 80,
+              "backendPort": 80,
+              "enableFloatingIP": false,
+              "idleTimeoutInMinutes": 5,
+              "probe": {
+                "id": "[variables('lbProbeID')]"
+              }
+            }
+          }
+        ],
+        "probes": [
+          {
+            "name": "HTTP",
+            "properties": {
+              "protocol": "Tcp",
+              "port": 80,
+              "intervalInSeconds": 5,
+              "numberOfProbes": 2
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.Network/virtualNetworks",
+      "apiVersion": "2018-12-01",
+      "name": "3TierVnet",
+      "location": "[resourceGroup().location]",
+      "copy": {
+        "name": "Vnet-Copy",
+        "count": 1
+      },
+      "dependsOn": [
+        "[concat('Microsoft.Network/networkSecurityGroups/','Websubnet-NSG')]",
+        "[concat('Microsoft.Network/networkSecurityGroups/','Appsub-NSG')]",
+        "[concat('Microsoft.Network/networkSecurityGroups/','DBsub-NSG')]"
+      ],
+      "properties": {
+        "addressSpace": {
+          "addressPrefixes": [ "172.16.0.0/16" ]
+        },
+        "subnets": [
+          {
+            "name": "Web-Subnet",
+            "properties": {
+              "addressPrefix": "172.16.1.0/24",
+              "networkSecurityGroup": {
+                "id": "[resourceId('Microsoft.Network/networkSecurityGroups','Websubnet-NSG')]"
+              }
+            }
+          },
+          {
+            "name": "App-Subnet",
+            "properties": {
+              "addressPrefix": "172.16.2.0/24",
+              "networkSecurityGroup": {
+                "id": "[resourceId('Microsoft.Network/networkSecurityGroups','Appsub-NSG')]"
+              }
+            }
+          },
+          {
+            "name": "DB-Subnet",
+            "properties": {
+              "addressPrefix": "172.16.3.0/24",
+              "networkSecurityGroup": {
+                "id": "[resourceId('Microsoft.Network/networkSecurityGroups','DBsub-NSG')]"
+              },
+              "serviceEndpoints": [
+                {
+                  "service": "Microsoft.Sql",
+                  "locations": [
+                    "centralus"
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "tags": {
+        "display": "Virtual Network"
+      }
+
+    },
+    {
+      "condition": "[equals(parameters('Tier'),'DB-Tier')]",
+      "type": "Microsoft.Sql/servers",
+      "apiVersion": "2015-05-01-preview",
+      "name": "sqlserver44",
+      "location": "centralus",
+      "kind": "v12.0",
+      "properties": {
+        "administratorLogin": "[parameters('Admin_name')]",
+        "administratorLoginPassword": "[parameters('Admin_password')]",
+        "version": "12.0"
+      }
+    },
+    {
+      "condition": "[equals(parameters('Tier'),'DB-Tier')]",
+      "type": "Microsoft.Sql/servers/databases",
+      "apiVersion": "2017-03-01-preview",
+      "name": "[concat('sqlserver44','/sqldatabase',copyIndex())]",
+      "location": "centralus",
+      "dependsOn": [
+        "[resourceId('Microsoft.Sql/servers','sqlserver44')]"
+      ],
+      "copy": {
+        "name": "DB",
+        "count": "[parameters('No.of Instances')]"
+      },
+      "sku": {
+        "name": "S0",
+        "tier": "Standard"
+      },
+      "kind": "v12.0,user",
+      "properties": {
+        "edition": "[variables('databaseEdition')]",
+        "collation": "SQL_Latin1_General_CP1_CI_AS",
+        "catalogCollation": "SQL_Latin1_General_CP1_CI_AS",
+        "requestedServiceObjectiveName": "[variables('databaseServiceObjectiveName')]",
+        "zoneRedundant": false
+      }
+    },
+    {
+      "condition": "[equals(parameters('Tier'),'Web-Tier')]",
+      "type": "Microsoft.Compute/availabilitySets",
+      "apiVersion": "2017-03-30",
+      "name": "[variables('AVS-name')]",
+      "location": "[resourceGroup().location]",
+      "sku": {
+        "name": "Aligned"
+      },
+      "tags": {
+        "display": "Availabilityset"
+      },
+      "copy": {
+        "name": "AVS-Copy",
+        "count": 1
+      },
+      "properties": {
+        "platformFaultDomainCount": 2,
+        "platformUpdateDomainCount": 2
+      }
+    },
+    {
+      "condition": "[equals(parameters('Tier'),'Web-Tier')]",
+      "type": "Microsoft.Network/networkInterfaces",
+      "name": "[concat('webVM',copyIndex(),'-nic')]",
+      "location": "[resourceGroup().location]",
+      "apiVersion": "2016-03-30",
+      "tags": {
+        "display": "NetworkInterface"
+      },
+      "copy": {
+        "name": "Nic-Copy",
+        "count": "[parameters('No.of Instances')]"
+      },
+      "dependsOn": [
+        "Vnet-Copy",
+        "[resourceId('Microsoft.Network/loadBalancers', variables('lbname'))]"
+      ],
+
+      "properties": {
+        "ipConfigurations": [
+          {
+            "name": "[concat('ipconfig',copyIndex())]",
+            "properties": {
+              "privateIPAllocationMethod": "Dynamic",
+              "subnet": {
+                "id": "[variables('webnicSubnetRef')]"
+              },
+              "loadBalancerBackendAddressPools": [
+                {
+                  "id": "[concat(resourceId('Microsoft.Network/loadBalancers',variables('lbname')),'/backendAddressPools/BackendPoolLB')]"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "condition": "[equals(parameters('Tier'),'Web-Tier')]",
+      "type": "Microsoft.Network/publicIPAddresses",
+      "apiVersion": "2015-05-01-preview",
+      "name": "[variables('publicIPAddressName')]",
+      "location": "[resourceGroup().location]",
+      "properties": {
+        "publicIPAllocationMethod": "Dynamic"
+      }
+    },
+    {
+      "condition": "[equals(parameters('Tier'),'Web-Tier')]",
+      "type": "Microsoft.Compute/virtualMachines",
+      "name": "[concat('webVM',copyIndex())]",
+      "apiVersion": "2016-04-30-preview",
+      "location": "[resourcegroup().location]",
+      "copy": {
+        "name": "VM-copy",
+        "count": "[parameters('No.of Instances')]"
+      },
+      "properties": {
+        "availabilitySet": {
+          "id": "[resourceId('Microsoft.Compute/availabilitySets',variables('AVS-name'))]"
+        },
+        "hardwareProfile": {
+          "vmSize": "[parameters('Vmsize')]"
+        },
+        "storageProfile": {
+          "imageReference": {
+            "publisher": "[variables('VM_Images')[parameters('OperatingSystem')].publisher]",
+            "offer": "[variables('VM_Images')[parameters('OperatingSystem')].offer]",
+            "sku": "[variables('VM_Images')[parameters('OperatingSystem')].sku]",
+            "version": "[variables('VM_Images')[parameters('OperatingSystem')].version]"
+          },
+          "osDisk": {
+            "name": "[concat(variables('VirtualMachineName'),copyIndex(),'-osdisk')]",
+            "managedDisk": {
+              "storageAccountType": "Standard_LRS"
+            },
+            "createOption": "FromImage"
+
+          }
+        },
+        "osProfile": {
+          "computerName": "[variables('VirtualMachineName')]",
+          "adminUsername": "[parameters('Admin_name')]",
+          "adminPassword": "[parameters('Admin_password')]"
+        },
+        "networkProfile": {
+          "networkInterfaces": [
+            {
+              "id": "[resourceId('Microsoft.Network/networkInterfaces',concat('webVM',copyIndex(),'-nic'))]"
+            }
+          ]
+        }
+      },
+      "dependsOn": [
+        "Nic-Copy",
+        "AVS-Copy"
+      ]
+    },
+    {
+      "condition": "[equals(parameters('Tier'),'App-Tier')]",
+      "type": "Microsoft.Network/networkInterfaces",
+      "name": "[concat('appVM',copyIndex(),'-nic')]",
+      "location": "[resourceGroup().location]",
+      "apiVersion": "2016-03-30",
+      "tags": {
+        "display": "NetworkInterface"
+      },
+      "copy": {
+        "name": "Nic-Copy",
+        "count": "[parameters('No.of Instances')]"
+      },
+      "dependsOn": [
+        "Vnet-Copy"
+      ],
+
+      "properties": {
+        "ipConfigurations": [
+          {
+            "name": "[concat('ipconfig',copyIndex())]",
+            "properties": {
+              "privateIPAllocationMethod": "Dynamic",
+              "subnet": {
+                "id": "[variables('appnicSubnetRef')]"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "condition": "[equals(parameters('Tier'),'App-Tier')]",
+      "type": "Microsoft.Compute/virtualMachines",
+      "name": "[concat('appVM',copyIndex())]",
+      "apiVersion": "2016-04-30-preview",
+      "location": "[resourcegroup().location]",
+      "copy": {
+        "name": "VM-copy",
+        "count": "[parameters('No.of Instances')]"
+      },
+      "properties": {
+        "hardwareProfile": {
+          "vmSize": "[parameters('Vmsize')]"
+        },
+        "storageProfile": {
+          "imageReference": {
+            "publisher": "[variables('VM_Images')[parameters('OperatingSystem')].publisher]",
+            "offer": "[variables('VM_Images')[parameters('OperatingSystem')].offer]",
+            "sku": "[variables('VM_Images')[parameters('OperatingSystem')].sku]",
+            "version": "[variables('VM_Images')[parameters('OperatingSystem')].version]"
+          },
+          "osDisk": {
+            "name": "[concat(variables('VirtualMachineName'),copyIndex(),'-osdisk')]",
+            "managedDisk": {
+              "storageAccountType": "Standard_LRS"
+            },
+            "createOption": "FromImage"
+
+          }
+        },
+        "osProfile": {
+          "computerName": "[variables('VirtualMachineName')]",
+          "adminUsername": "[parameters('Admin_name')]",
+          "adminPassword": "[parameters('Admin_password')]"
+        },
+        "networkProfile": {
+          "networkInterfaces": [
+            {
+              "id": "[resourceId('Microsoft.Network/networkInterfaces',concat('appVM',copyIndex(),'-nic'))]"
+            }
+          ]
+        }
+      },
+      "dependsOn": [
+        "Nic-Copy"
+      ]
+    },
+    {
+      "condition": "[equals(parameters('Tier'),'DB-Tier')]",
+      "type": "Microsoft.Sql/servers/virtualNetworkRules",
+      "apiVersion": "2015-05-01-preview",
+      "name": "[concat('sqlserver44', '/newVnetRule1')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Sql/servers', 'sqlserver44')]",
+        "Vnet-Copy"
+      ],
+      "properties": {
+        "virtualNetworkSubnetId": "[resourceId('Microsoft.Network/virtualNetworks/subnets','3TierVnet','DB-Subnet')]",
+        "ignoreMissingVnetServiceEndpoint": false
+      }
+    }
+  ],
+  "outputs": {
+  }
+}
